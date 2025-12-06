@@ -1,0 +1,97 @@
+name: Build Proxy Branch
+
+on:
+  workflow_dispatch: # 允许手动触发
+  push:
+    branches:
+      - feat/proxy-api-server # 当该分支更新时自动触发
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+      fail-fast: false
+
+    steps:
+      # 1. 检出 feat/proxy-api-server 分支的代码
+      - name: Check out Git repository
+        uses: actions/checkout@v4
+        with:
+          ref: feat/proxy-api-server
+          fetch-depth: 0
+
+      # 2. 安装 Node.js 22 (参考官方 release.yml)
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 3. macOS 特殊依赖 (参考官方配置)
+      - name: macos-latest dependencies fix
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install python-setuptools
+
+      # 4. 启用 Yarn 4.9.1 (参考官方配置)
+      - name: Install corepack
+        run: corepack enable && corepack prepare yarn@4.9.1 --activate
+
+      # 5. 缓存依赖 (加快构建速度)
+      - name: Get yarn cache directory path
+        id: yarn-cache-dir-path
+        run: echo "dir=$(yarn config get cacheFolder)" >> $GITHUB_OUTPUT
+
+      - name: Cache yarn dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.yarn-cache-dir-path.outputs.dir }}
+            node_modules
+          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+
+      # 6. 安装依赖
+      - name: Install Dependencies
+        run: yarn install
+
+      # ================= 构建步骤 =================
+
+      # Windows 构建
+      - name: Build Windows
+        if: matrix.os == 'windows-latest'
+        env:
+          # 关键：禁用自动签名发现，防止因缺少证书报错
+          CSC_IDENTITY_AUTO_DISCOVERY: false 
+        run: yarn build:win
+
+      # macOS 构建
+      # 注意：没有证书构建出的 .dmg 在 Mac 上安装时可能会提示"已损坏"，需要手动执行 xattr -cr 处理
+      - name: Build Mac
+        if: matrix.os == 'macos-latest'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: yarn build:mac
+
+      # Linux 构建
+      - name: Build Linux
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get install -y rpm
+          yarn build:linux
+
+      # ================= 上传产物 =================
+      
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherry-studio-${{ matrix.os }}-build
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: warn
